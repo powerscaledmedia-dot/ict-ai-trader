@@ -38,11 +38,17 @@ class RiskDecision:
 MAX_CONCURRENT_POSITIONS = 2
 MAX_RISK_PCT = 0.01           # 1% of account per trade
 ACCOUNT_EQUITY = 50_000.0     # TopStep / Lucid 50K eval
-DAILY_LOSS_LIMIT = 2_000.0    # TopStep 50K eval daily loss limit
+DAILY_LOSS_LIMIT = 2_000.0    # Eval daily loss limit (ignored in FUNDED_MODE)
 DAILY_LOSS_BUFFER = 300.0     # Stop when within $300 of limit
 CONSECUTIVE_LOSS_LIMIT = 3    # Pause after N losses
 CONSECUTIVE_LOSS_COOLDOWN_HOURS = 2
 MAX_CONTRACTS = int(os.getenv("ICT_MAX_CONTRACTS", "5"))  # Hard cap per trade
+
+# ── Lucid LucidFlex eval rules ──
+PROFIT_TARGET    = float(os.getenv("ICT_PROFIT_TARGET", "3000"))   # $3,000 for LucidFlex 50K
+CONSISTENCY_PCT  = float(os.getenv("ICT_CONSISTENCY_PCT", "0.50")) # 50% — no day > 50% of total profit
+FUNDED_MODE      = os.getenv("ICT_FUNDED_MODE", "false").lower() == "true"
+# FUNDED_MODE=true disables daily loss limit + consistency checks (no rules when funded)
 
 # Contract tick values for sizing
 _TICK_VALUES: dict[str, float] = {
@@ -169,12 +175,12 @@ def check_risk(
             reason=f"Max concurrent positions ({MAX_CONCURRENT_POSITIONS}) reached — {open_count} open",
         )
 
-    # 3. Daily loss check
+    # 3. Daily loss check (skipped in funded mode — Lucid has no daily loss limit when funded)
     todays_pnl = daily_pnl_override if daily_pnl_override is not None else _get_todays_pnl()
     loss_so_far = -todays_pnl if todays_pnl < 0 else 0.0
     remaining_daily_limit = DAILY_LOSS_LIMIT - loss_so_far
 
-    if remaining_daily_limit <= DAILY_LOSS_BUFFER:
+    if not FUNDED_MODE and remaining_daily_limit <= DAILY_LOSS_BUFFER:
         return RiskDecision(
             status=RiskStatus.REJECTED,
             reason=(
@@ -183,12 +189,27 @@ def check_risk(
             ),
         )
 
-    # 4. Calculate position size and validate stop
+    # 4. Consistency rule — no single day > 50% of profit target (eval only)
+    # Lucid LucidFlex: best day cannot exceed 50% of $3,000 = $1,500
+    if not FUNDED_MODE and todays_pnl > 0:
+        max_day_profit = PROFIT_TARGET * CONSISTENCY_PCT
+        if todays_pnl >= max_day_profit:
+            return RiskDecision(
+                status=RiskStatus.REJECTED,
+                reason=(
+                    f"Consistency cap hit: today's P&L ${todays_pnl:.0f} has reached "
+                    f"${max_day_profit:.0f} ({CONSISTENCY_PCT*100:.0f}% of ${PROFIT_TARGET:.0f} target) — "
+                    f"stop trading today to protect consistency rule"
+                ),
+            )
+
+    # 5. Calculate position size
     size = calculate_position_size(instrument, entry, stop)
 
+    mode_tag = "FUNDED" if FUNDED_MODE else "EVAL"
     return RiskDecision(
         status=RiskStatus.APPROVED,
-        reason=f"All risk checks passed — {open_count + 1}/{MAX_CONCURRENT_POSITIONS} positions, ${loss_so_far:.0f} lost today",
+        reason=f"[{mode_tag}] All risk checks passed — {open_count + 1}/{MAX_CONCURRENT_POSITIONS} positions, ${loss_so_far:.0f} lost today",
         suggested_size=size,
     )
 
@@ -197,6 +218,7 @@ def get_risk_dashboard() -> dict:
     """Returns current risk state for the dashboard."""
     now = datetime.now(timezone.utc)
     pnl = _get_todays_pnl()
+    max_day = PROFIT_TARGET * CONSISTENCY_PCT
     return {
         "daily_pnl": pnl,
         "daily_loss_limit": DAILY_LOSS_LIMIT,
@@ -207,4 +229,10 @@ def get_risk_dashboard() -> dict:
         "cooldown_active": _cooldown_until is not None and now < _cooldown_until,
         "cooldown_until": _cooldown_until.isoformat() if _cooldown_until else None,
         "account_equity": ACCOUNT_EQUITY,
+        # Lucid eval-specific
+        "funded_mode": FUNDED_MODE,
+        "profit_target": PROFIT_TARGET,
+        "consistency_cap": max_day,
+        "consistency_used_pct": (pnl / max_day) if pnl > 0 and not FUNDED_MODE else 0.0,
+        "consistency_cap_hit": (not FUNDED_MODE and pnl >= max_day),
     }
