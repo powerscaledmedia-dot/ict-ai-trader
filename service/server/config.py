@@ -41,3 +41,29 @@ REPLY_PUBLISH_REWARD = 2       # Points for replying to a strategy/discussion
 
 # Environment
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# ==================== ICT / Trading ====================
+
+# Tradovate
+TRADOVATE_ENV = os.getenv("TRADOVATE_ENV", "demo")          # "demo" | "live"
+TRADOVATE_USERNAME = os.getenv("TRADOVATE_USERNAME", "")
+TRADOVATE_PASSWORD = os.getenv("TRADOVATE_PASSWORD", "")
+TRADOVATE_CID = os.getenv("TRADOVATE_CID", "")
+TRADOVATE_SECRET = os.getenv("TRADOVATE_SECRET", "")
+
+# Anthropic (Claude Opus — nightly analyst only)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# Telegram notifications
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Risk rules (can override in .env)
+ICT_ACCOUNT_EQUITY = float(os.getenv("ICT_ACCOUNT_EQUITY", "50000"))
+ICT_DAILY_LOSS_LIMIT = float(os.getenv("ICT_DAILY_LOSS_LIMIT", "2000"))
+ICT_DAILY_LOSS_BUFFER = float(os.getenv("ICT_DAILY_LOSS_BUFFER", "300"))
+ICT_MAX_CONCURRENT_POSITIONS = int(os.getenv("ICT_MAX_CONCURRENT_POSITIONS", "2"))
+ICT_MAX_RISK_PCT = float(os.getenv("ICT_MAX_RISK_PCT", "0.01"))
+
+# Webhook security token (optional — set to require auth on /webhook/tradingview)
+ICT_WEBHOOK_SECRET = os.getenv("ICT_WEBHOOK_SECRET", "")

@@ -27,6 +27,7 @@ import {
 } from './AppPages'
 import { ChallengePage } from './ChallengePage'
 import { TeamMissionsPage } from './TeamMissionsPage'
+import { ICTDashboard } from './ICTDashboard'
 import { Language, getT } from './i18n'
 
 
@@ -234,9 +235,10 @@ function AppRouter({
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/trade" element={token ? <TradePage token={token} agentInfo={agentInfo} onTradeSuccess={fetchAgentInfo} /> : <Navigate to="/login" replace />} />
             <Route path="/exchange" element={token ? <ExchangePage token={token} onExchangeSuccess={fetchAgentInfo} /> : <Navigate to="/login" replace />} />
+            <Route path="/ict" element={<ICTDashboard />} />
             <Route path="/login" element={<LoginPage onLogin={login} />} />
             <Route path="/register" element={<RegisterPage onLogin={login} />} />
-            <Route path="*" element={<Navigate to="/market" replace />} />
+            <Route path="*" element={<Navigate to="/ict" replace />} />
           </Routes>
         </div>
 

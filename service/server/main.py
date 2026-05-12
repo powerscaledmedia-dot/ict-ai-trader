@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 from cache import get_cache_status
 from database import init_database, get_database_status
+from database_ict import init_ict_tables
 from routes import create_app
 from tasks import (
     _update_trending_cache,
@@ -46,6 +47,7 @@ from tasks import (
 
 # Initialize database
 init_database()
+init_ict_tables()
 
 # Create app
 app = create_app()

@@ -1,0 +1,96 @@
+// ================================================================
+// ICT Webhook Sender — TradingView Pine Script v5
+// ================================================================
+// Attach this to any chart (MES1!, MNQ1!, GC1!, SI1!).
+// Configure your webhook URL in the alert dialog.
+//
+// HOW TO USE:
+// 1. Add this script to your chart
+// 2. Set up an alert: right-click chart → Add Alert
+// 3. Condition: "ICT Webhook Sender" → "Signal Fired"
+// 4. Webhook URL: http://YOUR_SERVER_IP:8000/webhook/tradingview
+// 5. Message: leave as {{strategy.order.alert_message}} or use custom JSON below
+//
+// The script fires on YOUR existing setup conditions.
+// Replace the condition block below with your own ICT detection logic.
+// ================================================================
+
+//@version=5
+indicator("ICT Webhook Sender", overlay=true, max_bars_back=500)
+
+// ── Inputs ──────────────────────────────────────────────────────
+setup_type  = input.string("FVG", "Setup Type",
+    options=["FVG", "IFVG", "ORDER_BLOCK", "LIQUIDITY_GRAB", "SMT_DIVERGENCE"])
+direction   = input.string("bullish", "Direction",
+    options=["bullish", "bearish"])
+killzone    = input.string("asia", "Killzone",
+    options=["asia", "london", "ny"])
+tf          = input.string("5", "Timeframe")
+
+// ── FVG Detection (replace with your Pine Script logic) ──────────
+// Bullish FVG: gap between candle[-2].high and current candle.low
+bullish_fvg = high[2] < low and close[1] > open[1] and (close[1] - open[1]) > (high[1] - low[1]) * 0.5
+bearish_fvg = low[2] > high and close[1] < open[1] and (open[1] - close[1]) > (high[1] - low[1]) * 0.5
+
+// ── Order Block Detection ─────────────────────────────────────────
+// Last bearish candle before a strong up-move
+bullish_ob = close[1] < open[1] and close > open and (close - open) > (high - low) * 0.6
+bearish_ob = close[1] > open[1] and close < open and (open - close) > (high - low) * 0.6
+
+// ── Liquidity Grab Detection ──────────────────────────────────────
+swing_high = ta.highest(high, 20)[1]
+swing_low  = ta.lowest(low, 20)[1]
+bull_liq_grab = low < swing_low and close > open  // Spike below, then reversal up
+bear_liq_grab = high > swing_high and close < open  // Spike above, then reversal down
+
+// ── Session Filter ────────────────────────────────────────────────
+// UTC-based session windows (adjust for your timezone if needed)
+in_asia   = (hour >= 1  and hour < 5)   // 01:00–05:00 UTC
+in_london = (hour >= 7  and hour < 11)  // 07:00–11:00 UTC
+in_ny     = (hour >= 13 and hour < 17)  // 13:00–17:00 UTC
+in_session = in_asia or in_london or in_ny
+
+// ── Entry / Stop / Target Calculation ────────────────────────────
+// These are approximate — your Pine logic should calculate exact levels
+entry_bull  = close
+stop_bull   = low - (high - low) * 0.3
+target_bull = close + (close - stop_bull) * 2.5
+
+entry_bear  = close
+stop_bear   = high + (high - low) * 0.3
+target_bear = close - (stop_bear - close) * 2.5
+
+// ── Signal Logic ──────────────────────────────────────────────────
+bull_signal = (bullish_fvg or bullish_ob or bull_liq_grab) and in_session
+bear_signal = (bearish_fvg or bearish_ob or bear_liq_grab) and in_session
+
+// ── Plot signals on chart ─────────────────────────────────────────
+plotshape(bull_signal, title="Bull Signal", location=location.belowbar,
+    style=shape.triangleup, color=color.new(color.lime, 0), size=size.small)
+plotshape(bear_signal, title="Bear Signal", location=location.abovebar,
+    style=shape.triangledown, color=color.new(color.red, 0), size=size.small)
+
+// ── Alert condition ───────────────────────────────────────────────
+// When you create an alert, use this condition and set the webhook URL.
+// The message field in the alert dialog should be:
+// {"setup":"FVG","direction":"bullish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{low}},"target":{{high}},"killzone":"asia","timestamp":"{{time}}"}
+//
+// Or for a dynamic message, use the alertcondition below with a custom JSON in the alert message box.
+
+alertcondition(bull_signal, title="Bull ICT Signal Fired",
+    message='{"setup":"FVG","direction":"bullish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{low}},"target":{{high}},"killzone":"asia","timestamp":"{{timenow}}"}')
+
+alertcondition(bear_signal, title="Bear ICT Signal Fired",
+    message='{"setup":"FVG","direction":"bearish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{high}},"target":{{low}},"killzone":"asia","timestamp":"{{timenow}}"}')
+
+// ── Visual: FVG Box Drawing ────────────────────────────────────────
+var box fvg_box = na
+if bullish_fvg
+    fvg_box := box.new(bar_index - 1, low, bar_index + 20, high[2],
+        border_color=color.new(color.lime, 60),
+        bgcolor=color.new(color.lime, 85))
+
+if bearish_fvg
+    fvg_box := box.new(bar_index - 1, high, bar_index + 20, low[2],
+        border_color=color.new(color.red, 60),
+        bgcolor=color.new(color.red, 85))

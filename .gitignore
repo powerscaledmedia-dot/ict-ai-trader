@@ -131,3 +131,8 @@ change.md
 
 # Local agent config symlink
 .codex
+
+# ICT runtime files (generated at runtime — not for sharing)
+setup_weights.json
+*.db
+service/server/logs/analyst/
