@@ -1,36 +1,36 @@
 """
 Eval Optimizer — 2-Day Pass Mode for Lucid LucidFlex.
 
-Lucid requires a 2-day minimum trading window to pass.
-This module enforces an OPTIMAL daily target distribution:
+Lucid requires a 2-day MINIMUM trading window to pass.
+Target: exactly $3,000 profit, split 50/50.
 
-  Day 1: target $1,400 — stop trading on hit
-  Day 2: target $1,650 — stop trading on hit (passes $3K)
+  Day 1: $1,500 (stop here)
+  Day 2: $1,500 (stop here → eval passes at $3,000)
+  Best day: 50.0% of total
 
-  Why those numbers:
-  - Total: $3,050 ($50 buffer above $3K target)
-  - Best day: $1,650 = 54% of $3,000 BUT split across 2 days makes each
-    day ≤ 50% of the FINAL total profit (the actual consistency check)
-  - $1,650 / $3,050 = 54% — wait, that violates 50% rule
+CONSISTENCY MATH:
+  Lucid's 50% rule means "no single day's profit can exceed 50% of total profit".
+  The 50/50 split is the ONLY mathematically clean 2-day pass at $3K:
+    - $1,500 + $1,500 = $3,000, each day = 50.0% exactly
+    - ANY uneven split makes one day > 50% and fails
+    - To stay strictly UNDER 50% would need a 3rd small day
 
-  CORRECTED math for consistency:
-  - If you make $3,050 total, max single day = $1,525 (50%)
-  - So: Day 1 = $1,500, Day 2 = $1,500 → $3,000 ✓ (each day = 50% exactly)
-  - Safer: Day 1 = $1,400, Day 2 = $1,600 → $3,000, best day = 53% ✗
-  - To stay UNDER 50%: Day 1 needs to be at least equal to Day 2
-  - So: Day 1 = $1,500, Day 2 = $1,510 → $3,010, best day = 50.2% ✗
+  Interpretation matters:
+    - "≤ 50%" (inclusive): 50/50 passes
+    - "<  50%" (strict):   50/50 fails by 1 cent → need ICT_STRICT_CONSISTENCY=true
 
-  ACTUAL FIX: do not over-perform Day 1 and Day 2 must equal Day 1.
-  → Target $1,500 each day, stop when hit.
-
-  Some firms read consistency as STRICTLY <50%, others ≤50%.
-  We use 48% as the safe ceiling per day.
+STRICT MODE (ICT_STRICT_CONSISTENCY=true):
+  Adds a Day 3 trim trade to push best-day ratio below 50%.
+    Day 1: $1,500
+    Day 2: $1,500
+    Day 3: $200 (any small profit)
+    Total: $3,200, best day = 1500/3200 = 46.9% ✓ strictly under 50%
 
 Behaviors:
   - Active when ICT_EVAL_2DAY_MODE=true
-  - Tracks day counter (Day 1, Day 2, complete)
-  - Halts each day's trading at daily_target
-  - On Day 2 hit: announces eval pass via Telegram, switches to FUNDED_MODE
+  - Tracks day counter (Day 1, Day 2, Day 3-trim if strict, PASSED)
+  - Halts each day's trading at its target
+  - On eval pass: Telegram alert + suggests setting FUNDED_MODE=true
 """
 
 from __future__ import annotations
@@ -48,20 +48,24 @@ from database import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-EVAL_2DAY_MODE  = os.getenv("ICT_EVAL_2DAY_MODE", "true").lower() == "true"
-EVAL_TARGET     = float(os.getenv("ICT_PROFIT_TARGET", "3000"))
-DAY1_TARGET     = float(os.getenv("ICT_DAY1_TARGET", "1450"))   # 48% of $3,000
-DAY2_TARGET     = float(os.getenv("ICT_DAY2_TARGET", "1450"))   # remaining to hit $2,900-$2,950
-CONSISTENCY_CAP = float(os.getenv("ICT_CONSISTENCY_PCT", "0.50"))
+EVAL_2DAY_MODE     = os.getenv("ICT_EVAL_2DAY_MODE", "true").lower() == "true"
+EVAL_TARGET        = float(os.getenv("ICT_PROFIT_TARGET", "3000"))
+DAY1_TARGET        = float(os.getenv("ICT_DAY1_TARGET", "1500"))
+DAY2_TARGET        = float(os.getenv("ICT_DAY2_TARGET", "1500"))
+CONSISTENCY_CAP    = float(os.getenv("ICT_CONSISTENCY_PCT", "0.50"))
+STRICT_CONSISTENCY = os.getenv("ICT_STRICT_CONSISTENCY", "false").lower() == "true"
+# Day 3 trim trade for strict-consistency interpretation (brings ratio < 50%)
+DAY3_TRIM_TARGET   = float(os.getenv("ICT_DAY3_TRIM", "200"))
 
 STATE_FILE = Path(__file__).parent / "eval_state.json"
 
 
 class EvalDay(str, Enum):
-    DAY_1    = "DAY_1"
-    DAY_2    = "DAY_2"
-    PASSED   = "PASSED"
-    INACTIVE = "INACTIVE"
+    DAY_1     = "DAY_1"
+    DAY_2     = "DAY_2"
+    DAY_3_TRIM = "DAY_3_TRIM"  # only used in strict-consistency mode
+    PASSED    = "PASSED"
+    INACTIVE  = "INACTIVE"
 
 
 @dataclass
@@ -182,33 +186,78 @@ def check_eval_status() -> EvalDecision:
         )
 
     else:
-        # Day 2 or later
+        # Day 2 (or Day 3 trim in strict mode)
         day_1_pnl = state.get("day_1_pnl", 0.0)
-        # Consistency-safe Day 2 target: day_2 ≤ day_1 / consistency_pct - day_1
-        # Or simply: Day 2 = whatever brings total to EVAL_TARGET + buffer
-        target_total = EVAL_TARGET + 50  # small buffer above $3K
-        day_2_target = min(DAY2_TARGET, target_total - day_1_pnl)
-        # Hard cap: Day 2 cannot exceed Day 1 (would break consistency)
-        day_2_target = min(day_2_target, day_1_pnl)
+        day_2_pnl = state.get("day_2_pnl", 0.0)
+        day_2_date = state.get("day_2_date")
 
-        remaining = day_2_target - today_pnl
-        can_trade = today_pnl < day_2_target
+        is_day_two = (day_2_date is None or today == day_2_date)
 
-        reason = (
-            f"DAY 2: ${today_pnl:.0f} / ${day_2_target:.0f} target — ${remaining:.0f} to pass eval"
-            if can_trade else
-            f"DAY 2 TARGET HIT — eval should pass (total ${total_pnl:.0f}). Stop and request payout."
-        )
+        if is_day_two:
+            # Day 2 target: bring total to exactly $3,000 (so 50/50 split)
+            # Hard cap: Day 2 cannot EXCEED Day 1 (would break ≤50% consistency)
+            day_2_target = min(DAY2_TARGET, EVAL_TARGET - day_1_pnl, day_1_pnl)
+            remaining = day_2_target - today_pnl
+            can_trade = today_pnl < day_2_target
 
-        if not can_trade and total_pnl >= EVAL_TARGET:
+            # On Day 2 target hit
+            if not can_trade:
+                state["day_2_pnl"] = today_pnl
+                state["day_2_date"] = today
+                _save_state(state)
+
+                if STRICT_CONSISTENCY and total_pnl <= EVAL_TARGET:
+                    # In strict mode, the 50/50 split sits exactly at 50% — need Day 3 trim
+                    reason = (
+                        f"DAY 2 done (${today_pnl:.0f}). Total ${total_pnl:.0f}. "
+                        f"Strict consistency mode — take 1 small Day 3 trim trade tomorrow (~${DAY3_TRIM_TARGET:.0f}) "
+                        f"to push best-day ratio below 50%."
+                    )
+                else:
+                    state["passed"] = True
+                    _save_state(state)
+                    reason = f"DAY 2 TARGET HIT — EVAL PASSED (total ${total_pnl:.0f}). Stop and request payout."
+
+                return EvalDecision(
+                    day=EvalDay.DAY_2,
+                    today_pnl=today_pnl,
+                    today_target=day_2_target,
+                    remaining_today=0.0,
+                    total_pnl=total_pnl,
+                    can_trade=False,
+                    reason=reason,
+                )
+
+            return EvalDecision(
+                day=EvalDay.DAY_2,
+                today_pnl=today_pnl,
+                today_target=day_2_target,
+                remaining_today=remaining,
+                total_pnl=total_pnl,
+                can_trade=True,
+                reason=f"DAY 2: ${today_pnl:.0f} / ${day_2_target:.0f} — ${remaining:.0f} to complete eval",
+            )
+
+        # Day 3 trim (only in strict mode after Day 2 hit $3K exactly)
+        trim_target = DAY3_TRIM_TARGET
+        remaining = trim_target - today_pnl
+        can_trade = today_pnl < trim_target
+
+        if not can_trade:
             state["passed"] = True
             _save_state(state)
+            reason = (
+                f"DAY 3 TRIM HIT (${today_pnl:.0f}) — EVAL PASSED with best-day ratio "
+                f"{(day_1_pnl / total_pnl * 100):.1f}% (strict <50% satisfied)."
+            )
+        else:
+            reason = f"DAY 3 trim: ${today_pnl:.0f} / ${trim_target:.0f} — push ratio under 50%"
 
         return EvalDecision(
-            day=EvalDay.DAY_2,
+            day=EvalDay.DAY_3_TRIM,
             today_pnl=today_pnl,
-            today_target=day_2_target,
-            remaining_today=remaining,
+            today_target=trim_target,
+            remaining_today=max(0, remaining),
             total_pnl=total_pnl,
             can_trade=can_trade,
             reason=reason,
