@@ -29,6 +29,9 @@ from ict_scanner import evaluate_webhook_payload, get_setup_weights, load_setup_
 from killzone_manager import check_killzone, KillzoneStatus, get_session_schedule
 from news_sentinel import check_news, SentinelStatus
 from risk_governor import check_risk, RiskStatus, get_risk_dashboard, record_trade_result
+from account_guard import check_account_guard, GuardState, get_guard_dashboard
+from session_rules import check_session_rules, SessionStatus, get_session_dashboard
+from monthly_progress import get_monthly_progress
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +186,27 @@ def register_ict_routes(app: FastAPI) -> None:
 
         signal_uuid = str(uuid.uuid4())
 
+        # ── Agent 0: Account Guard (HARD LOCK — never fail an eval) ──
+        guard = check_account_guard()
+        if guard.state == GuardState.LOCKED:
+            _log_signal(
+                signal_uuid, body, "LOCKED", None, None, None, None,
+                "REJECTED", f"ACCOUNT GUARD LOCKED: {guard.reason}", None,
+            )
+            logger.warning("Signal LOCKED by account guard: %s", guard.reason)
+            _send_telegram(f"🔒 *ACCOUNT GUARD LOCKED*\n{guard.reason}")
+            return {"status": "locked", "reason": guard.reason, "metrics": guard.metrics}
+
+        # ── Agent 0.5: Session Rules (frequency, blackout, cooldown) ──
+        sess = check_session_rules()
+        if sess.status != SessionStatus.OK:
+            _log_signal(
+                signal_uuid, body, sess.status.value, None, None, None, None,
+                "REJECTED", sess.reason, None,
+            )
+            logger.info("Signal REJECTED by session rules: %s", sess.reason)
+            return {"status": "session_blocked", "reason": sess.reason, "minutes_remaining": sess.minutes_remaining}
+
         # ── Agent 1: Killzone Manager ──
         kz = check_killzone()
         if kz.status == KillzoneStatus.BLOCKED:
@@ -214,6 +238,16 @@ def register_ict_routes(app: FastAPI) -> None:
             logger.info("Signal REJECTED by scanner: %s", reason)
             return {"status": "rejected", "reason": reason, "grade": setup.grade.value, "score": setup.score}
 
+        # Account Guard may require A-grade only (WARNING/CRITICAL state)
+        if guard.min_grade_required == "A" and setup.grade.value != "A":
+            reason = f"Account guard requires A-grade (state={guard.state.value}); this setup is grade {setup.grade.value}"
+            _log_signal(
+                signal_uuid, body, guard.state.value, setup.grade.value, setup.score,
+                None, None, "REJECTED", reason, None,
+            )
+            logger.info("Signal REJECTED by guard grade-floor: %s", reason)
+            return {"status": "guard_filtered", "reason": reason}
+
         # ── Agent 4: News Sentinel ── (check before risk so we don't waste a position slot check)
         news = check_news(ALPHA_VANTAGE_KEY)
         if news.status == SentinelStatus.HALT:
@@ -235,7 +269,14 @@ def register_ict_routes(app: FastAPI) -> None:
             return {"status": "rejected", "reason": risk.reason}
 
         # ── All agents GREEN — execute ──
-        contracts = risk.suggested_size or 1
+        base_contracts = risk.suggested_size or 1
+        # Apply Account Guard size multiplier (1.0 SAFE, 0.5 WARNING, 0.33 CRITICAL)
+        contracts = max(1, int(round(base_contracts * guard.size_multiplier)))
+        if contracts < base_contracts:
+            logger.info(
+                "Guard scaled size: %d → %d (multiplier=%.2f, state=%s)",
+                base_contracts, contracts, guard.size_multiplier, guard.state.value
+            )
         order_id = None
         brokers_fired: list[str] = []
         last_error: Optional[str] = None
@@ -332,6 +373,9 @@ def register_ict_routes(app: FastAPI) -> None:
                 "schedule": get_session_schedule(),
             },
             "risk": risk,
+            "guard": get_guard_dashboard(),
+            "session_rules": get_session_dashboard(),
+            "monthly": get_monthly_progress(),
             "news": {
                 "status": news.status.value if news else "UNKNOWN",
                 "reason": news.reason if news else "",
@@ -339,6 +383,7 @@ def register_ict_routes(app: FastAPI) -> None:
             },
             "setup_weights": get_setup_weights(),
             "tradovate_connected": _TRADOVATE_ENABLED,
+            "rithmic_connected": _RITHMIC_ENABLED,
         }
 
     @app.get("/ict/signals")
