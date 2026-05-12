@@ -32,6 +32,7 @@ from risk_governor import check_risk, RiskStatus, get_risk_dashboard, record_tra
 from account_guard import check_account_guard, GuardState, get_guard_dashboard
 from session_rules import check_session_rules, SessionStatus, get_session_dashboard
 from monthly_progress import get_monthly_progress
+from eval_optimizer import check_eval_status, EvalDay, get_eval_dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,18 @@ def register_ict_routes(app: FastAPI) -> None:
             body = {}
 
         signal_uuid = str(uuid.uuid4())
+
+        # ── Agent -1: 2-Day Eval Optimizer (highest priority) ──
+        eval_state = check_eval_status()
+        if not eval_state.can_trade and eval_state.day != EvalDay.INACTIVE:
+            _log_signal(
+                signal_uuid, body, eval_state.day.value, None, None, None, None,
+                "REJECTED", eval_state.reason, None,
+            )
+            logger.info("Signal REJECTED by eval optimizer: %s", eval_state.reason)
+            if eval_state.day == EvalDay.PASSED:
+                _send_telegram(f"🏆 *EVAL PASSED* — total ${eval_state.total_pnl:.0f}\nSet ICT_FUNDED_MODE=true and request payout.")
+            return {"status": "eval_complete", "reason": eval_state.reason, "day": eval_state.day.value}
 
         # ── Agent 0: Account Guard (HARD LOCK — never fail an eval) ──
         guard = check_account_guard()
@@ -376,6 +389,7 @@ def register_ict_routes(app: FastAPI) -> None:
             "guard": get_guard_dashboard(),
             "session_rules": get_session_dashboard(),
             "monthly": get_monthly_progress(),
+            "eval_optimizer": get_eval_dashboard(),
             "news": {
                 "status": news.status.value if news else "UNKNOWN",
                 "reason": news.reason if news else "",

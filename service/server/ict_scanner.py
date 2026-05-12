@@ -4,16 +4,29 @@ ICT Scanner — Pure rule-based detection for ICT concepts.
 Detects: FVG, IFVG, Order Block, Liquidity Grab, SMT Divergence.
 No LLM calls at runtime — deterministic Python only.
 Setup quality is scored 0.0–1.0 using weighted heuristics.
+
+HIGH-CONVICTION MODE (ICT_HIGH_CONVICTION=true in .env):
+  - Only A-grade setups proceed (score >= 0.85)
+  - Minimum 3 confluence factors required
+  - Minimum R:R of 2.0
+  - Expect 1-3 trades per week (selectivity > frequency)
+  - Recommended for first eval pass and 80%+ WR target
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+HIGH_CONVICTION_MODE = os.getenv("ICT_HIGH_CONVICTION", "true").lower() == "true"
+MIN_CONFLUENCE_FACTORS = int(os.getenv("ICT_MIN_CONFLUENCE", "3"))
+MIN_RR_FLOOR = float(os.getenv("ICT_MIN_RR", "2.0"))
+HIGH_CONVICTION_SCORE_THRESHOLD = float(os.getenv("ICT_HIGH_CONVICTION_SCORE", "0.85"))
 
 
 class SetupType(str, Enum):
@@ -88,7 +101,35 @@ class ICTSetup:
 
     @property
     def is_tradeable(self) -> bool:
-        return self.grade in (Grade.A, Grade.B) and self.risk_reward >= 2.0
+        # High-conviction: A-only, 3+ confluences, score >= 0.85
+        if HIGH_CONVICTION_MODE:
+            return (
+                self.grade == Grade.A
+                and self.score >= HIGH_CONVICTION_SCORE_THRESHOLD
+                and len(self.confluence_factors) >= MIN_CONFLUENCE_FACTORS
+                and self.risk_reward >= MIN_RR_FLOOR
+            )
+        # Standard: A or B, R:R >= 2.0
+        return self.grade in (Grade.A, Grade.B) and self.risk_reward >= MIN_RR_FLOOR
+
+    @property
+    def rejection_reason(self) -> str:
+        """Why this setup was rejected, if not tradeable."""
+        if HIGH_CONVICTION_MODE:
+            if self.grade != Grade.A:
+                return f"High-conviction requires A-grade (this is {self.grade.value})"
+            if self.score < HIGH_CONVICTION_SCORE_THRESHOLD:
+                return f"Score {self.score:.2f} below high-conviction threshold {HIGH_CONVICTION_SCORE_THRESHOLD}"
+            if len(self.confluence_factors) < MIN_CONFLUENCE_FACTORS:
+                return f"Only {len(self.confluence_factors)} confluence factors (need {MIN_CONFLUENCE_FACTORS}+)"
+            if self.risk_reward < MIN_RR_FLOOR:
+                return f"R:R {self.risk_reward:.1f} below {MIN_RR_FLOOR} floor"
+        else:
+            if self.grade == Grade.C:
+                return f"Grade C (score {self.score:.2f}) — below B threshold"
+            if self.risk_reward < MIN_RR_FLOOR:
+                return f"R:R {self.risk_reward:.1f} below {MIN_RR_FLOOR} floor"
+        return "ok"
 
 
 # Setup weights — updated nightly by strategy_analyst.py
