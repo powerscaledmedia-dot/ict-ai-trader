@@ -36,12 +36,19 @@ ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "demo")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Tradovate bridge (optional — only if credentials are set)
+# Tradovate bridge — TopStep execution (optional)
 try:
     import tradovate_bridge as tvb
     _TRADOVATE_ENABLED = tvb.is_configured()
 except ImportError:
     _TRADOVATE_ENABLED = False
+
+# Rithmic bridge — Lucid Trading execution (optional)
+try:
+    import rithmic_bridge as rb
+    _RITHMIC_ENABLED = rb.is_configured()
+except ImportError:
+    _RITHMIC_ENABLED = False
 
 
 # ==================== Pydantic Models ====================
@@ -230,12 +237,15 @@ def register_ict_routes(app: FastAPI) -> None:
         # ── All agents GREEN — execute ──
         contracts = risk.suggested_size or 1
         order_id = None
+        brokers_fired: list[str] = []
+        last_error: Optional[str] = None
 
+        # TopStep → Tradovate
         if _TRADOVATE_ENABLED:
             from tradovate_bridge import OrderAction, place_order
             action = OrderAction.BUY if setup.direction.value == "bullish" else OrderAction.SELL
             result = place_order(
-                symbol=setup.instrument.replace("1!", "H5"),  # roll to front month
+                symbol=setup.instrument.replace("1!", "H5"),
                 action=action,
                 quantity=contracts,
                 bracket_stop=setup.stop,
@@ -243,12 +253,36 @@ def register_ict_routes(app: FastAPI) -> None:
             )
             if result.success:
                 order_id = str(result.order_id)
-                logger.info("Order placed: %s x%d order_id=%s", setup.instrument, contracts, order_id)
+                brokers_fired.append("tradovate")
+                logger.info("Tradovate order: %s x%d id=%s", setup.instrument, contracts, order_id)
             else:
-                logger.error("Order failed: %s", result.message)
-                return {"status": "error", "reason": f"Order placement failed: {result.message}"}
-        else:
-            logger.info("Tradovate not configured — paper trade: %s %s x%d", setup.direction.value, setup.instrument, contracts)
+                last_error = f"Tradovate: {result.message}"
+                logger.error("Tradovate order failed: %s", result.message)
+
+        # Lucid → Rithmic
+        if _RITHMIC_ENABLED:
+            from rithmic_bridge import OrderAction as RAction, place_order as rplace
+            raction = RAction.BUY if setup.direction.value == "bullish" else RAction.SELL
+            rresult = rplace(
+                symbol=setup.instrument,
+                action=raction,
+                quantity=contracts,
+                bracket_stop=setup.stop,
+                bracket_target=setup.target,
+            )
+            if rresult.success:
+                if not order_id:
+                    order_id = str(rresult.order_id)
+                brokers_fired.append("rithmic")
+                logger.info("Rithmic order: %s x%d id=%s", setup.instrument, contracts, rresult.order_id)
+            else:
+                last_error = (last_error or "") + f" | Rithmic: {rresult.message}"
+                logger.error("Rithmic order failed: %s", rresult.message)
+
+        if not _TRADOVATE_ENABLED and not _RITHMIC_ENABLED:
+            logger.info("No broker configured — paper trade: %s %s x%d", setup.direction.value, setup.instrument, contracts)
+        elif not brokers_fired and last_error:
+            return {"status": "error", "reason": f"All brokers failed: {last_error}"}
 
         trade_id = _log_trade(signal_uuid, setup, contracts, order_id, news.status.value)
 
@@ -259,8 +293,9 @@ def register_ict_routes(app: FastAPI) -> None:
 
         # Telegram notification
         emoji = "🟢" if setup.direction.value == "bullish" else "🔴"
+        brokers_str = " + ".join(b.upper() for b in brokers_fired) if brokers_fired else "PAPER"
         msg = (
-            f"{emoji} *ICT TRADE EXECUTED*\n"
+            f"{emoji} *ICT TRADE EXECUTED* [{brokers_str}]\n"
             f"Setup: {setup.setup_type.value} | {setup.direction.value.upper()}\n"
             f"Instrument: {setup.instrument} x{contracts}\n"
             f"Entry: {setup.entry} | Stop: {setup.stop} | Target: {setup.target}\n"
@@ -279,6 +314,7 @@ def register_ict_routes(app: FastAPI) -> None:
             "score": setup.score,
             "contracts": contracts,
             "order_id": order_id,
+            "brokers": brokers_fired,
         }
 
     @app.get("/ict/status")
