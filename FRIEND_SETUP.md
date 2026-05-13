@@ -7,20 +7,21 @@ This guide sets up your own instance of the ICT trading platform so you can:
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.11+
-- Node.js 18+
-- TopStep account with Tradovate access
-- TradingView account (for webhooks)
+- Windows 10/11 (Mac/Linux also works)
+- Python 3.10+ (`python --version` to check)
+- Node.js 18+ (for the dashboard — optional)
+- A prop firm eval account (TopStep via Tradovate, or Lucid via Rithmic)
+- TradingView account with the Pine script loaded
+- Telegram account (for trade notifications)
 
 ## Step 1 — Clone the Repo
 
 ```powershell
-git clone https://github.com/YOUR_FRIEND_GITHUB/ai-trader-ict.git
-cd ai-trader-ict
+git clone https://github.com/powerscaledmedia-dot/ict-ai-trader.git
+cd ict-ai-trader
 ```
 
-Or download the ZIP and extract it.
+Or download the ZIP from: https://github.com/powerscaledmedia-dot/ict-ai-trader/archive/refs/heads/main.zip
 
 ## Step 2 — Configure Your Environment
 
@@ -55,11 +56,11 @@ ICT_DAILY_LOSS_BUFFER=300
 ## Step 3 — Install Dependencies
 
 ```powershell
-# Backend
+# Backend (all dependencies in one command)
 pip install -r service/requirements.txt
-pip install yfinance anthropic
+pip install "pydantic[email]"
 
-# Frontend
+# Frontend (optional — for the dashboard UI)
 cd service/frontend
 npm install
 cd ../..
