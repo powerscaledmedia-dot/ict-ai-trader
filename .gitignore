@@ -135,5 +135,7 @@ change.md
 # ICT runtime files (generated at runtime — not for sharing)
 setup_weights.json
 eval_state.json
+trader_profile.json
+trade_screenshots/
 *.db
 service/server/logs/analyst/

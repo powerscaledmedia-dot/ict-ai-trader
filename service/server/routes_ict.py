@@ -431,6 +431,30 @@ def register_ict_routes(app: FastAPI) -> None:
             rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
         return {"trades": rows}
 
+    @app.get("/ict/profile")
+    async def get_trader_profile():
+        """Brody's personal trading style — used to weight every signal."""
+        from trader_profile import load_profile, describe_profile
+        profile = load_profile()
+        return {
+            "profile": profile.__dict__,
+            "summary": describe_profile(),
+        }
+
+    @app.post("/ict/profile")
+    async def update_trader_profile(updates: dict):
+        """
+        Update profile fields. Send only the keys you want to change.
+        Example: {"preferred_sessions": ["asia", "ny"]}
+        """
+        from trader_profile import load_profile, save_profile, TraderProfile
+        current = load_profile()
+        for k, v in updates.items():
+            if hasattr(current, k):
+                setattr(current, k, v)
+        save_profile(current)
+        return {"status": "updated", "profile": current.__dict__}
+
     @app.get("/ict/validate")
     async def validate_edge():
         """

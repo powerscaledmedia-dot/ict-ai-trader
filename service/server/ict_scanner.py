@@ -361,6 +361,16 @@ def _score_from_payload(payload: dict) -> tuple[float, list[str]]:
         factors.append(f"Intraday timeframe: {timeframe}m")
 
     score = max(0.0, min(1.0, score))
+
+    # ── Brody's personal trader profile overlay ──
+    # This is where YOUR style preferences shift the score above/below baseline.
+    # Edit trader_profile.json to tune as you send more trade screenshots.
+    try:
+        from trader_profile import apply_profile_scoring
+        score, factors = apply_profile_scoring(payload, score, factors)
+    except Exception as e:
+        logger.debug("Trader profile overlay skipped: %s", e)
+
     return score, factors
 
 
