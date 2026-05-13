@@ -84,8 +84,9 @@ def get_monthly_progress() -> dict:
     avg_win  = (gross / wins) if wins > 0 else 0.0
 
     # Days into month and days remaining
+    import calendar
     days_into_month = now.day
-    days_in_month   = (_month_start(now) + timedelta(days=32)).replace(day=1).day - 1
+    days_in_month   = calendar.monthrange(now.year, now.month)[1]
     days_remaining  = max(0, days_in_month - days_into_month)
 
     # Daily run-rate needed
@@ -93,7 +94,7 @@ def get_monthly_progress() -> dict:
     daily_needed = needed_gross / max(1, days_remaining) if needed_gross > 0 else 0.0
 
     # Pace status
-    expected_at_this_point = gross_target * (days_into_month / days_in_month)
+    expected_at_this_point = gross_target * (days_into_month / days_in_month) if days_in_month > 0 else 0.0
     pace = "AHEAD" if gross >= expected_at_this_point else "BEHIND"
     pace_delta = gross - expected_at_this_point
 
