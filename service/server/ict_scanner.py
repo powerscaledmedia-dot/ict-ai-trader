@@ -291,8 +291,36 @@ def _score_from_payload(payload: dict) -> tuple[float, list[str]]:
 
     setup_type = payload.get("setup", "").upper()
     base_weight = _SETUP_WEIGHTS.get(setup_type, 0.5)
-    score += base_weight * 0.4
+    score += base_weight * 0.35
     factors.append(f"Base weight {base_weight:.2f} for {setup_type}")
+
+    # ── SMC structural verification (smartmoneyconcepts library) ──
+    # This is the BIG signal source: real BOS/ChoCH/FVG/OB pattern alignment
+    try:
+        from smc_analyzer import analyze_setup, is_available
+        if is_available():
+            instrument = payload.get("instrument", "")
+            timeframe  = str(payload.get("timeframe", "5"))
+            entry      = float(payload.get("entry", 0))
+            direction  = payload.get("direction", "bullish").lower()
+
+            smc_result = analyze_setup(instrument, timeframe, entry, direction)
+            if smc_result.available:
+                # Strong signal: SMC structurally confirms the setup
+                if smc_result.structural_alignment == 1:
+                    boost = 0.10 + (smc_result.confluence_count * 0.05)  # 0.15–0.30
+                    score += min(boost, 0.30)
+                    factors.extend(smc_result.confluence_factors)
+                # Strong signal: SMC structurally CONFLICTS — penalize hard
+                elif smc_result.structural_alignment == -1:
+                    score -= 0.25
+                    factors.extend(smc_result.confluence_factors)
+                    factors.append("SMC structural conflict — high failure risk")
+                # Neutral: at least mention what SMC saw
+                elif smc_result.confluence_factors:
+                    factors.extend(smc_result.confluence_factors[:2])
+    except Exception as e:
+        logger.debug("SMC enhancement skipped: %s", e)
 
     # Risk-reward bonus
     try:

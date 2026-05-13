@@ -431,6 +431,26 @@ def register_ict_routes(app: FastAPI) -> None:
             rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
         return {"trades": rows}
 
+    @app.get("/ict/validate")
+    async def validate_edge():
+        """
+        Statistical validation of the system's actual closed-trade edge.
+        Runs Monte Carlo, Bootstrap CI, Walk-Forward on real trade history.
+        Returns "GO LIVE" / "DO NOT GO LIVE" verdict.
+        """
+        from validation import run_full_validation
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT pnl FROM ict_trades
+                WHERE status = 'closed' AND pnl IS NOT NULL
+                ORDER BY closed_at ASC
+            """)
+            pnls = [float(r[0]) for r in cursor.fetchall()]
+        if len(pnls) < 5:
+            return {"error": f"Need at least 5 closed trades; have {len(pnls)}"}
+        return run_full_validation(pnls, initial_capital=50_000)
+
     @app.post("/ict/backtest")
     async def run_backtest_endpoint(req: BacktestRequest):
         """Run a backtest and return results."""

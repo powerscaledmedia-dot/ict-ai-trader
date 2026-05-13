@@ -49,6 +49,7 @@ class BacktestResult:
     trades: list[BacktestTrade] = field(default_factory=list)
     by_setup: dict = field(default_factory=dict)
     by_session: dict = field(default_factory=dict)
+    validation: dict = field(default_factory=dict)
 
 
 def _get_session(dt: datetime) -> str:
@@ -358,6 +359,16 @@ def run_backtest(
         by_session[t.session]["wins" if t.outcome == "win" else "losses"] += 1
         by_session[t.session]["pnl"] += t.pnl
 
+    # Statistical validation — is this edge real or lucky?
+    validation_report = {}
+    if len(trades) >= 5:
+        try:
+            from validation import run_full_validation
+            trade_pnls = [t.pnl for t in trades]
+            validation_report = run_full_validation(trade_pnls, initial_capital=50_000)
+        except Exception as e:
+            logger.warning("Validation skipped: %s", e)
+
     return BacktestResult(
         instrument=instrument,
         start_date=start_date,
@@ -373,4 +384,5 @@ def run_backtest(
         trades=trades,
         by_setup=by_setup,
         by_session=by_session,
+        validation=validation_report,
     )

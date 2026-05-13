@@ -13,3 +13,6 @@ redis>=5.0.8
 websockets>=12.0
 protobuf>=4.25.0
 yfinance>=0.2.40
+smartmoneyconcepts>=0.0.27
+numpy>=1.26.0
+pandas>=2.0.0
