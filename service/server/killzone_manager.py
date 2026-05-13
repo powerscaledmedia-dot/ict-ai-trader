@@ -35,10 +35,12 @@ class KillzoneResult:
 
 
 # UTC hour ranges for each session (inclusive start, exclusive end)
+# NOTE: Extended Asia + NY Lunch added per Brody's screenshots — these are HIS edge windows
 _SESSIONS = {
-    "asia":   (1, 5),    # 01:00–05:00 UTC = 19:00–23:00 CST
-    "london": (7, 11),   # 07:00–11:00 UTC = 01:00–05:00 CST
-    "ny":     (13, 17),  # 13:00–17:00 UTC = 07:00–11:00 CST
+    "asia":     (0, 6),    # 00:00–06:00 UTC = 18:00 EST onwards (extended Asia for MNQ + Gold)
+    "london":   (7, 11),   # 07:00–11:00 UTC = 02:00–06:00 EST (London open)
+    "ny":       (13, 17),  # 13:00–17:00 UTC = 08:00–12:00 EST (NY morning)
+    "ny_lunch": (17, 19),  # 17:00–19:00 UTC = 12:00–14:00 EST (NY Lunch — high WR window)
 }
 
 # Macro events that trigger a blackout window (minutes before/after)

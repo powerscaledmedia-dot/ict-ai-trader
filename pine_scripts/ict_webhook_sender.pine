@@ -1,96 +1,159 @@
-// ================================================================
-// ICT Webhook Sender — TradingView Pine Script v5
-// ================================================================
-// Attach this to any chart (MES1!, MNQ1!, GC1!, SI1!).
-// Configure your webhook URL in the alert dialog.
+// =================================================================
+// ICT Webhook Sender — Brody's Setup Detection
+// =================================================================
+// Tuned from 17 screenshots of Brody's actual trades.
 //
-// HOW TO USE:
-// 1. Add this script to your chart
-// 2. Set up an alert: right-click chart → Add Alert
-// 3. Condition: "ICT Webhook Sender" → "Signal Fired"
-// 4. Webhook URL: http://YOUR_SERVER_IP:8000/webhook/tradingview
-// 5. Message: leave as {{strategy.order.alert_message}} or use custom JSON below
+// CORE PATTERN ENCODED:
+//   1. Liquidity sweep (sweep AS.L, AS.H, NY Lunch H/L, or equal H/L)
+//   2. FVG or IFVG forms in opposite direction after sweep
+//   3. Price retests into the FVG
+//   4. Enter on retest → target next FVG or session liquidity
 //
-// The script fires on YOUR existing setup conditions.
-// Replace the condition block below with your own ICT detection logic.
-// ================================================================
+// SESSIONS (UTC):
+//   Asia:     00:00-06:00 UTC (8 PM EST onwards — Brody's primary)
+//   NY Lunch: 17:00-19:00 UTC (12-2 PM EST — Brody's secondary edge)
+//   London:   07:00-11:00 UTC (3-7 AM EST — tertiary)
+//
+// =================================================================
 
 //@version=5
-indicator("ICT Webhook Sender", overlay=true, max_bars_back=500)
+indicator("Brody ICT Sender", overlay=true, max_bars_back=500)
 
 // ── Inputs ──────────────────────────────────────────────────────
-setup_type  = input.string("FVG", "Setup Type",
-    options=["FVG", "IFVG", "ORDER_BLOCK", "LIQUIDITY_GRAB", "SMT_DIVERGENCE"])
-direction   = input.string("bullish", "Direction",
-    options=["bullish", "bearish"])
-killzone    = input.string("asia", "Killzone",
-    options=["asia", "london", "ny"])
-tf          = input.string("5", "Timeframe")
+swing_lookback   = input.int(20,   "Swing Lookback (bars)", minval=5)
+htf_fvg_tf       = input.timeframe("30", "HTF FVG Timeframe (DOL)")
+liq_sweep_window = input.int(10,   "Bars for liquidity sweep to count", minval=2)
+min_displacement = input.float(0.6, "Min displacement candle body ratio", minval=0.3, maxval=1.0)
+rr_target        = input.float(2.5, "Target R:R", minval=1.5)
 
-// ── FVG Detection (replace with your Pine Script logic) ──────────
-// Bullish FVG: gap between candle[-2].high and current candle.low
-bullish_fvg = high[2] < low and close[1] > open[1] and (close[1] - open[1]) > (high[1] - low[1]) * 0.5
-bearish_fvg = low[2] > high and close[1] < open[1] and (open[1] - close[1]) > (high[1] - low[1]) * 0.5
+// ── Bullish FVG detection (3-candle gap) ─────────────────────────
+bull_fvg_present = high[2] < low and (close[1] - open[1]) > (high[1] - low[1]) * min_displacement and close[1] > open[1]
+bull_fvg_top     = low
+bull_fvg_bot     = high[2]
+bull_fvg_mid     = (bull_fvg_top + bull_fvg_bot) / 2.0
 
-// ── Order Block Detection ─────────────────────────────────────────
-// Last bearish candle before a strong up-move
-bullish_ob = close[1] < open[1] and close > open and (close - open) > (high - low) * 0.6
-bearish_ob = close[1] > open[1] and close < open and (open - close) > (high - low) * 0.6
+// ── Bearish FVG detection ─────────────────────────────────────────
+bear_fvg_present = low[2] > high and (open[1] - close[1]) > (high[1] - low[1]) * min_displacement and close[1] < open[1]
+bear_fvg_top     = low[2]
+bear_fvg_bot     = high
+bear_fvg_mid     = (bear_fvg_top + bear_fvg_bot) / 2.0
 
-// ── Liquidity Grab Detection ──────────────────────────────────────
-swing_high = ta.highest(high, 20)[1]
-swing_low  = ta.lowest(low, 20)[1]
-bull_liq_grab = low < swing_low and close > open  // Spike below, then reversal up
-bear_liq_grab = high > swing_high and close < open  // Spike above, then reversal down
+// ── IFVG (Inverse FVG) — FVG that was respected then violated ────
+// Bullish IFVG: bearish FVG that price has closed THROUGH and is now retesting from above
+var bool bear_fvg_invalidated = false
+var bool bull_fvg_invalidated = false
+if bear_fvg_present
+    bear_fvg_invalidated := false
+if close > bear_fvg_top[1] and bear_fvg_present[1]
+    bear_fvg_invalidated := true
+bull_ifvg_signal = bear_fvg_invalidated and close > open
 
-// ── Session Filter ────────────────────────────────────────────────
-// UTC-based session windows (adjust for your timezone if needed)
-in_asia   = (hour >= 1  and hour < 5)   // 01:00–05:00 UTC
-in_london = (hour >= 7  and hour < 11)  // 07:00–11:00 UTC
-in_ny     = (hour >= 13 and hour < 17)  // 13:00–17:00 UTC
-in_session = in_asia or in_london or in_ny
+if bull_fvg_present
+    bull_fvg_invalidated := false
+if close < bull_fvg_bot[1] and bull_fvg_present[1]
+    bull_fvg_invalidated := true
+bear_ifvg_signal = bull_fvg_invalidated and close < open
 
-// ── Entry / Stop / Target Calculation ────────────────────────────
-// These are approximate — your Pine logic should calculate exact levels
+// ── Swing high/low (liquidity reference) ─────────────────────────
+swing_hi = ta.highest(high, swing_lookback)[1]
+swing_lo = ta.lowest(low, swing_lookback)[1]
+
+// ── Liquidity sweep detection ────────────────────────────────────
+// Bullish sweep: price spiked below swing low recently, now reversing up
+bull_liq_swept = false
+for i = 1 to liq_sweep_window
+    if low[i] < swing_lo[i]
+        bull_liq_swept := true
+        break
+
+// Bearish sweep: price spiked above swing high recently, now reversing down
+bear_liq_swept = false
+for i = 1 to liq_sweep_window
+    if high[i] > swing_hi[i]
+        bear_liq_swept := true
+        break
+
+// ── HTF FVG (30M) for Draw On Liquidity ──────────────────────────
+htf_high       = request.security(syminfo.tickerid, htf_fvg_tf, high[2])
+htf_high_curr  = request.security(syminfo.tickerid, htf_fvg_tf, low)
+htf_low        = request.security(syminfo.tickerid, htf_fvg_tf, low[2])
+htf_low_curr   = request.security(syminfo.tickerid, htf_fvg_tf, high)
+
+htf_bull_fvg_present = htf_high < htf_high_curr
+htf_bear_fvg_present = htf_low > htf_low_curr
+
+// HTF aligned with the LTF setup direction?
+htf_aligned_bull = htf_bull_fvg_present
+htf_aligned_bear = htf_bear_fvg_present
+
+// ── Entry inside FVG zone? ───────────────────────────────────────
+entry_inside_bull_fvg = bull_fvg_present and close >= bull_fvg_bot and close <= bull_fvg_top
+entry_inside_bear_fvg = bear_fvg_present and close >= bear_fvg_bot and close <= bear_fvg_top
+
+// ── Sessions (UTC) ───────────────────────────────────────────────
+in_asia     = (hour >= 0  and hour < 6)
+in_london   = (hour >= 7  and hour < 11)
+in_ny       = (hour >= 13 and hour < 17)
+in_ny_lunch = (hour >= 17 and hour < 19)
+in_session  = in_asia or in_london or in_ny or in_ny_lunch
+
+session_name = in_asia ? "asia" : in_ny_lunch ? "ny_lunch" : in_london ? "london" : in_ny ? "ny" : "off"
+
+// ── Final signal logic ───────────────────────────────────────────
+// LONG: liquidity below was swept + bullish FVG/IFVG forms + entry inside zone + HTF aligned + session
+bull_signal = in_session and bull_liq_swept and (bull_fvg_present or bull_ifvg_signal) and entry_inside_bull_fvg and htf_aligned_bull
+
+// SHORT: liquidity above was swept + bearish FVG/IFVG forms + entry inside zone + HTF aligned + session
+bear_signal = in_session and bear_liq_swept and (bear_fvg_present or bear_ifvg_signal) and entry_inside_bear_fvg and htf_aligned_bear
+
+// ── Entry / Stop / Target ────────────────────────────────────────
 entry_bull  = close
-stop_bull   = low - (high - low) * 0.3
-target_bull = close + (close - stop_bull) * 2.5
+stop_bull   = bull_fvg_bot - syminfo.mintick * 4
+target_bull = entry_bull + (entry_bull - stop_bull) * rr_target
 
 entry_bear  = close
-stop_bear   = high + (high - low) * 0.3
-target_bear = close - (stop_bear - close) * 2.5
+stop_bear   = bear_fvg_top + syminfo.mintick * 4
+target_bear = entry_bear - (stop_bear - entry_bear) * rr_target
 
-// ── Signal Logic ──────────────────────────────────────────────────
-bull_signal = (bullish_fvg or bullish_ob or bull_liq_grab) and in_session
-bear_signal = (bearish_fvg or bearish_ob or bear_liq_grab) and in_session
+// ── Setup type label ─────────────────────────────────────────────
+bull_setup_type = bull_ifvg_signal ? "IFVG" : bull_fvg_present ? "FVG" : "LIQUIDITY_GRAB"
+bear_setup_type = bear_ifvg_signal ? "IFVG" : bear_fvg_present ? "FVG" : "LIQUIDITY_GRAB"
 
-// ── Plot signals on chart ─────────────────────────────────────────
-plotshape(bull_signal, title="Bull Signal", location=location.belowbar,
+// ── Plot signals ─────────────────────────────────────────────────
+plotshape(bull_signal, title="Brody LONG", location=location.belowbar,
     style=shape.triangleup, color=color.new(color.lime, 0), size=size.small)
-plotshape(bear_signal, title="Bear Signal", location=location.abovebar,
+plotshape(bear_signal, title="Brody SHORT", location=location.abovebar,
     style=shape.triangledown, color=color.new(color.red, 0), size=size.small)
 
-// ── Alert condition ───────────────────────────────────────────────
-// When you create an alert, use this condition and set the webhook URL.
-// The message field in the alert dialog should be:
-// {"setup":"FVG","direction":"bullish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{low}},"target":{{high}},"killzone":"asia","timestamp":"{{time}}"}
+// ── Draw FVG boxes ───────────────────────────────────────────────
+if bull_fvg_present
+    box.new(bar_index - 1, bull_fvg_top, bar_index + 20, bull_fvg_bot,
+        border_color=color.new(color.lime, 60), bgcolor=color.new(color.lime, 85))
+if bear_fvg_present
+    box.new(bar_index - 1, bear_fvg_top, bar_index + 20, bear_fvg_bot,
+        border_color=color.new(color.red, 60), bgcolor=color.new(color.red, 85))
+
+// ── Expose stop/target as plots so TV alerts can substitute them ─
+plot(stop_bull,   "stop_bull",   display=display.none)
+plot(target_bull, "target_bull", display=display.none)
+plot(stop_bear,   "stop_bear",   display=display.none)
+plot(target_bear, "target_bear", display=display.none)
+
+// ── Webhook alerts ───────────────────────────────────────────────
+// Set up TWO alerts in TV: one for LONG, one for SHORT.
+// Each alert sends a complete JSON payload that the Brody trader profile expects:
+//   liquidity_swept=true, htf_fvg_aligned=true, entry_inside_zone=true
+// (These are all guaranteed true at signal time because of the bull_signal/bear_signal conditions above)
 //
-// Or for a dynamic message, use the alertcondition below with a custom JSON in the alert message box.
+// LONG: use "setup":"FVG" — if you want IFVG alerts separately, duplicate this alertcondition
+//       and change bull_signal to bull_ifvg_signal (and "setup":"IFVG")
 
-alertcondition(bull_signal, title="Bull ICT Signal Fired",
-    message='{"setup":"FVG","direction":"bullish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{low}},"target":{{high}},"killzone":"asia","timestamp":"{{timenow}}"}')
+alertcondition(bull_signal, title="Brody LONG fired",
+    message='{"setup":"FVG","direction":"bullish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{plot("stop_bull")}},"target":{{plot("target_bull")}},"killzone":"asia","liquidity_swept":true,"htf_fvg_aligned":true,"entry_inside_zone":true,"timestamp":"{{timenow}}"}')
 
-alertcondition(bear_signal, title="Bear ICT Signal Fired",
-    message='{"setup":"FVG","direction":"bearish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{high}},"target":{{low}},"killzone":"asia","timestamp":"{{timenow}}"}')
+alertcondition(bear_signal, title="Brody SHORT fired",
+    message='{"setup":"FVG","direction":"bearish","instrument":"{{ticker}}","timeframe":"{{interval}}","entry":{{close}},"stop":{{plot("stop_bear")}},"target":{{plot("target_bear")}},"killzone":"asia","liquidity_swept":true,"htf_fvg_aligned":true,"entry_inside_zone":true,"timestamp":"{{timenow}}"}')
 
-// ── Visual: FVG Box Drawing ────────────────────────────────────────
-var box fvg_box = na
-if bullish_fvg
-    fvg_box := box.new(bar_index - 1, low, bar_index + 20, high[2],
-        border_color=color.new(color.lime, 60),
-        bgcolor=color.new(color.lime, 85))
-
-if bearish_fvg
-    fvg_box := box.new(bar_index - 1, high, bar_index + 20, low[2],
-        border_color=color.new(color.red, 60),
-        bgcolor=color.new(color.red, 85))
+// NOTE: TV does not support dynamic {{killzone}} string substitution in alerts.
+// The backend killzone_manager re-derives the active session from UTC time anyway,
+// so the hardcoded "asia" above is just a placeholder — the server overrides it.
